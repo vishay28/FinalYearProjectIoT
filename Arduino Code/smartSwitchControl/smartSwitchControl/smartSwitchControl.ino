@@ -4,11 +4,19 @@
 #include <ESP8266WebServer.h>
 // Flash memory library
 #include <EEPROM.h>
+// HTTP Client library
+#include <ESP8266HTTPClient.h>
 
 // Initialise the address counter
 int writeAddress = 0;
 // Initialise the array to store the network details
 String readValues[2];
+
+// Initialise the linked device variable
+String device;
+
+// Initialise the switch value variable
+int inputValue;
 
 // Creating a webserver on port 80
 ESP8266WebServer server(80);
@@ -72,15 +80,15 @@ void setup() {
       Serial.print(WiFi.localIP());
       Serial.print("\n");
 
-      // Sets up the output pins which set and unset the relay
-      pinMode(12, OUTPUT);
-      pinMode(13, OUTPUT);
+      // Setup the input pin for reading the switch status
+      pinMode(14, INPUT_PULLUP);
+      inputValue = digitalRead(14);
 
       // Sends the network IP address
       server.on("/getIp", HTTP_GET, sendIp);
     
-      // Toggles the plug on or off
-      server.on("/switch", HTTP_PUT, switchStatus);
+      // Updates the device that the switch is connected to
+      server.on("/devices", HTTP_PUT, updateDevices);
     
       // Starts the server
       server.begin();
@@ -94,7 +102,7 @@ void setup() {
     digitalWrite(0, LOW);
     
     // Starting up the access point with the provided ssid and password
-    WiFi.softAP("smartPlug", "");
+    WiFi.softAP("smartSwitch", "");
   
     // Print out the access point details
     Serial.print("Access Point Started");
@@ -124,6 +132,13 @@ void setup() {
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 void loop(void){
   server.handleClient();
+  // Checks if the switch has been toggled
+  if (digitalRead(14) != inputValue) {
+    // Saves the new state of the switch
+    inputValue = digitalRead(14);
+    // Calls the function to toggle the connected device
+    sendSwitch(inputValue);
+  }
 }
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 
@@ -167,27 +182,40 @@ void sendIp() {
   WiFi.softAPdisconnect(true);
 }
 
-// Function to toggle the plug on and off
-void switchStatus(){
-  String statusVal;
-  statusVal = server.arg(0);
-  Serial.print("Switch status: ");
-  Serial.print(statusVal);
-  Serial.print("\n");
-  if (statusVal == "true")
-  {
-    digitalWrite(12, HIGH);
-    delay(10);
-    digitalWrite(12, LOW);
-  }
-  else {
-    digitalWrite(13, HIGH);
-    delay(10);
-    digitalWrite(13, LOW);
-  }
+// Function to update the connected device
+void updateDevices(){
+  // Gets the IP address of the device from the parameters
+  device = server.arg(0);
+  Serial.println("Device Saved: " + device);
   server.send(204);
 }
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
+
+/* SWITCH FUNCTIONS----------------------------------------------------------------------------------------------------------------*/
+// Function to toggle the connected device
+void sendSwitch(int input) {
+  String value;
+  // Converts the integer value to a boolean value
+  if (input == 0){
+    value = "true";
+  }
+  else {
+    value = "false";
+  }
+  Serial.println("Sending Status: "+value + " to device: " + device);
+
+  // Setup the HTTP request
+  HTTPClient http;
+  // Sets the URL
+  http.begin("http://" + device + "/switch");
+  // Sets the content type header
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  // Sends the PUT request
+  int responseCode = http.PUT("Status="+value);
+  http.end();
+}
+
+/* SWITCH FUNCTIONS----------------------------------------------------------------------------------------------------------------*/
 
 /* MEMORY FUNCTIONS-------------------------------------------------------------------------------------------------------------------*/
 void cleanMem() {
