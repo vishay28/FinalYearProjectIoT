@@ -81,6 +81,9 @@ void setup() {
     
       // Toggles the plug on or off
       server.on("/switch", HTTP_PUT, switchStatus);
+
+      // Resets all the settings
+      server.on("/reset", HTTP_DELETE, resetSettings);
     
       // Starts the server
       server.begin();
@@ -121,6 +124,12 @@ void setup() {
 }
 /* SETUP MODE-------------------------------------------------------------------------------------------------------------------------*/
 
+
+/* RESET FUNCTION---------------------------------------------------------------------------------------------------------------------*/
+void(* resetFunc) (void) = 0;
+/* RESET FUNCTION---------------------------------------------------------------------------------------------------------------------*/
+
+
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 void loop(void){
   server.handleClient();
@@ -150,6 +159,9 @@ void postSetup(){
 
   // Retruns a 201 once the details have been saved
   server.send(201, "text/plain", "201: Saved WiFi details, please connect to your main network");
+
+  delay(100);
+  resetFunc();
 }
 
 void handleNotFound(){
@@ -186,6 +198,14 @@ void switchStatus(){
     digitalWrite(13, LOW);
   }
   server.send(204);
+}
+
+// Function to reset the settings
+void resetSettings(){
+  cleanMem();
+  server.send(200);
+  delay(100);
+  resetFunc();
 }
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
 

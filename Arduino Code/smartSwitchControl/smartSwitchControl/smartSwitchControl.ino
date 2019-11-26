@@ -9,10 +9,9 @@
 
 // Initialise the address counter
 int writeAddress = 0;
-// Initialise the array to store the network details
-String readValues[2];
+// Initialise the array to store the values stored in memory
+String readValues[3];
 
-// Initialise the linked device variable
 String device;
 
 // Initialise the switch value variable
@@ -23,6 +22,7 @@ ESP8266WebServer server(80);
 
 
 void setup() {
+  
   // Setup LED Indicators
   // Pin 0 is the Red LED and pin 2 is the Blue LED
   pinMode(0, OUTPUT);
@@ -44,6 +44,7 @@ void setup() {
   delay(1000);
   String networkName = readValues[0];
   String networkPassword = readValues[1];
+  device = readValues[2];
 
   // Determining whether to run in setup mode or connect to an existing network
 /* WIFI MODE--------------------------------------------------------------------------------------------------------------------------*/
@@ -89,6 +90,9 @@ void setup() {
     
       // Updates the device that the switch is connected to
       server.on("/devices", HTTP_PUT, updateDevices);
+
+      // Resets all the settings
+      server.on("/reset", HTTP_DELETE, resetSettings);
     
       // Starts the server
       server.begin();
@@ -129,6 +133,12 @@ void setup() {
 }
 /* SETUP MODE-------------------------------------------------------------------------------------------------------------------------*/
 
+
+/* RESET FUNCTION---------------------------------------------------------------------------------------------------------------------*/
+void(* resetFunc) (void) = 0;
+/* RESET FUNCTION---------------------------------------------------------------------------------------------------------------------*/
+
+
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 void loop(void){
   server.handleClient();
@@ -160,11 +170,14 @@ void postSetup(){
   cleanMem();
 
   // Writes the network details to memory
-  saveToMem(ssid);
-  saveToMem(password);
+  saveToMem(ssid, false);
+  saveToMem(password, false);
 
   // Retruns a 201 once the details have been saved
   server.send(201, "text/plain", "201: Saved WiFi details, please connect to your main network");
+
+  delay(100);
+  resetFunc();
 }
 
 void handleNotFound(){
@@ -176,18 +189,27 @@ void handleNotFound(){
 // Function to return the IP address of the arduino on the home network
 void sendIp() {
   // Sends the IP address along with the device type
-  server.send(200, "text/plain", "{"+WiFi.localIP().toString()+":\"plug\"}");
+  server.send(200, "text/plain", "{"+WiFi.localIP().toString()+":\"smartSwitch\"}");
   delay(100);
   // Disconnects from the phone
   WiFi.softAPdisconnect(true);
 }
 
-// Function to update the connected device
+// Function to reset the settings
 void updateDevices(){
   // Gets the IP address of the device from the parameters
   device = server.arg(0);
+  saveToMem(device, true);
   Serial.println("Device Saved: " + device);
   server.send(204);
+}
+
+// Function to update the connected device
+void resetSettings(){
+  cleanMem();
+  server.send(200);
+  delay(100);
+  resetFunc();
 }
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
 
@@ -230,7 +252,8 @@ void cleanMem() {
 }
 
 
-void saveToMem(String valueToSave) {
+void saveToMem(String valueToSave, bool saveDevice) {
+  
   int valueLength = valueToSave.length()+1; 
   char charArray[valueLength];
   
@@ -244,6 +267,9 @@ void saveToMem(String valueToSave) {
     EEPROM.write(writeAddress, charArray[i]);
     EEPROM.commit();
     writeAddress++;
+  }
+  if (saveDevice) {
+    writeAddress = writeAddress - sizeof(charArray);
   }
   Serial.print("\nAdded ");
   Serial.print(valueToSave);
@@ -260,7 +286,7 @@ void readFromMem() {
   char convertedChar;
   String value;
   
-  for (int i = 0; i < 2; i++)
+  for (int i = 0; i < 3; i++)
   {
     value = "";
     lengthOfValue = EEPROM.read(readAddress);
@@ -273,8 +299,15 @@ void readFromMem() {
         value += convertedChar;
        readAddress++;
       }
-      readValues[i] = value; 
+      readValues[i] = value;
+      Serial.println("Read value: "+readValues[i]); 
     }
+  }
+  if (lengthOfValue != 255) {
+    writeAddress = readAddress - (lengthOfValue+1);
+  }
+  else {
+    writeAddress = readAddress;
   }
 }
 /* MEMORY FUNCTIONS-------------------------------------------------------------------------------------------------------------------*/
