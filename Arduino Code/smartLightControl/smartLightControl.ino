@@ -16,14 +16,10 @@ int writeAddress = 0;
 // Initialise the array to store the network details
 String readValues[2];
 
-int rCurrent = 0;
-int gCurrent = 0;
-int bCurrent = 0;
-int rOld = 0;
-int gOld = 0;
-int bOld = 0;
+int R = 0;
+int G = 0;
+int B = 0;
 bool christmas = false;
-bool rave = false;
 
 // Creating a webserver on port 80
 ESP8266WebServer server(80);
@@ -159,7 +155,7 @@ void(* resetFunc) (void) = 0;
 
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 void loop(void){
-  if (christmas == true) {
+  while (christmas) {
     for (int i=1; i<=NUM_LEDS; i=i+2) {
       leds[i-1] = CRGB(255, 0, 0);
     }
@@ -175,14 +171,8 @@ void loop(void){
       leds[i-1] = CRGB(255, 0, 0);
     }
     FastLED.show();
+    server.handleClient();
     delay(500);
-  }
-  else {
-    for (int i=1; i<=NUM_LEDS; i++) {
-      leds[i-1] = CRGB(rCurrent, gCurrent, bCurrent);
-    }
-    FastLED.show();
-    delay(1);
   }
   server.handleClient();
 }
@@ -212,7 +202,7 @@ void postSetup(){
   // Retruns a 201 once the details have been saved
   server.send(201, "text/plain", "201: Saved WiFi details, please connect to your main network");
 
-  delay(100);
+  delay(5000);
   resetFunc();
 }
 
@@ -220,6 +210,17 @@ void handleNotFound(){
   server.send(404, "text/plain", "404: Not found");
 }
 /* SETUP REQUEST FUNCTIONS------------------------------------------------------------------------------------------------------------*/
+
+/* WIFI REQUEST SUPPORT FUNCTIONS--------------------------------------------------------------------------------------------------*/
+
+void updateLeds(int rNew, int gNew, int bNew) {
+  for (int i=1; i<=NUM_LEDS; i++) {
+    leds[i-1] = CRGB(rNew, gNew, bNew);
+  }
+  FastLED.show();
+}
+
+/* WIFI REQUEST SUPPORT FUNCTIONS--------------------------------------------------------------------------------------------------*/
 
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
 // Function to return the IP address of the arduino on the home network
@@ -232,7 +233,11 @@ void sendIp() {
 }
 
 void getColour() {
-  server.send(200, "text/plain", "{\"r\":"+String(rCurrent)+", \"g\":"+String(gCurrent)+", \"b\":"+String(bCurrent)+"}");
+  if (leds[0]) {
+    server.send(200, "text/plain", "{\"status\":true, \"r\":"+String(R)+", \"g\":"+String(G)+", \"b\":"+String(B)+"}");
+  } else {
+    server.send(200, "text/plain", "{\"status\":false, \"r\":"+String(R)+", \"g\":"+String(G)+", \"b\":"+String(B)+"}");
+  }
 }
 
 void updateColour() {
@@ -243,33 +248,25 @@ void updateColour() {
     christmas = false;
   }
   else {
-   rCurrent = server.arg(0).toInt();
-   gCurrent = server.arg(1).toInt();
-   bCurrent = server.arg(2).toInt(); 
+   R = server.arg(0).toInt();
+   G = server.arg(1).toInt();
+   B = server.arg(2).toInt();
+   updateLeds(R, G, B);
   }
   server.send(204);
 }
 
 void switchControl() {
   if (server.arg(0) == "false") {
-    rOld = rCurrent;
-    gOld = gCurrent;
-    bOld = bCurrent;
-    rCurrent = 0;
-    gCurrent = 0;
-    bCurrent = 0;
+    updateLeds(0,0,0);
   }
   else {
-    if ((rOld == 0) and (gOld == 0) and (bOld == 0)) {
-      rCurrent = 255;
-      gCurrent = 255;
-      bCurrent = 255;
+    if ((R == 0) and (G == 0) and (B == 0)) {
+      R = 255;
+      G = 255;
+      B = 255;
     }
-    else {
-     rCurrent = rOld;
-     gCurrent = gOld;
-     bCurrent = bOld;
-    }
+    updateLeds(R, G, B);
   }
   server.send(204);
 }

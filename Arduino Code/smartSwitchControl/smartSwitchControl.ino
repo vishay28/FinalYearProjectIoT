@@ -176,7 +176,7 @@ void postSetup(){
   // Retruns a 201 once the details have been saved
   server.send(201, "text/plain", "201: Saved WiFi details, please connect to your main network");
 
-  delay(100);
+  delay(5000);
   resetFunc();
 }
 
