@@ -11,7 +11,7 @@
 int writeAddress = 0;
 // Initialise the array to store the values stored in memory
 String readValues[3];
-
+// Initialise string to store the IP address of the device
 String device;
 
 // Initialise the switch value variable
@@ -39,7 +39,7 @@ void setup() {
   delay(10);
   Serial.println('\n');
 
-  // Read in the network name and password from memory if it exisits
+  // Read in the network name, password and connected device from memory if it exisits
   readFromMem();
   delay(1000);
   String networkName = readValues[0];
@@ -90,6 +90,9 @@ void setup() {
     
       // Updates the device that the switch is connected to
       server.on("/devices", HTTP_PUT, updateDevices);
+
+      // Gets the IP address of the device that the switch is connected to
+      server.on("/devices", HTTP_GET, getDevices);
 
       // Resets all the settings
       server.on("/reset", HTTP_DELETE, resetSettings);
@@ -195,7 +198,7 @@ void sendIp() {
   WiFi.softAPdisconnect(true);
 }
 
-// Function to reset the settings
+// Function to update the device connected to the switch
 void updateDevices(){
   // Gets the IP address of the device from the parameters
   device = server.arg(0);
@@ -210,6 +213,11 @@ void resetSettings(){
   server.send(200);
   delay(100);
   resetFunc();
+}
+
+// Function to return the IP address of the device that is connected to the switch
+void getDevices() {
+  server.send(200, "text/plain", "{\"deviceIp\":"+String(device)+"}");
 }
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
 

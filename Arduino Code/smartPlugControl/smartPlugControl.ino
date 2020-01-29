@@ -10,6 +10,9 @@ int writeAddress = 0;
 // Initialise the array to store the network details
 String readValues[2];
 
+//Initialise variable to store the current status
+bool plugStatus = false;
+
 // Creating a webserver on port 80
 ESP8266WebServer server(80);
 
@@ -81,6 +84,9 @@ void setup() {
     
       // Toggles the plug on or off
       server.on("/switch", HTTP_PUT, switchStatus);
+
+      // Gets the status of the plug
+      server.on("/switch", HTTP_GET, getStatus);
 
       // Resets all the settings
       server.on("/reset", HTTP_DELETE, resetSettings);
@@ -188,16 +194,23 @@ void switchStatus(){
   Serial.print("\n");
   if (statusVal == "true")
   {
+    plugStatus = true;
     digitalWrite(12, HIGH);
     delay(10);
     digitalWrite(12, LOW);
   }
   else {
+    plugStatus = false;
     digitalWrite(13, HIGH);
     delay(10);
     digitalWrite(13, LOW);
   }
   server.send(204);
+}
+
+// Function to return the current status of the plug
+void getStatus() {
+  server.send(200, "plain/text", "{\"status\":"+String(plugStatus)+"}");
 }
 
 // Function to reset the settings

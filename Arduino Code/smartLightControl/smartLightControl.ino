@@ -4,11 +4,14 @@
 #include <ESP8266WebServer.h>
 // Flash memory library
 #include <EEPROM.h>
-
+// LED strip library
 #include <FastLED.h>
 
+// Defining the data pin for the LEDs
 #define LED_PIN 14
+// Defining how many LEDS are on the strip
 #define NUM_LEDS 15
+// Creating an LED arrray
 CRGB leds[NUM_LEDS];
 
 // Initialise the address counter
@@ -16,6 +19,7 @@ int writeAddress = 0;
 // Initialise the array to store the network details
 String readValues[2];
 
+// Initialise the RGB values
 int R = 0;
 int G = 0;
 int B = 0;
@@ -26,7 +30,9 @@ ESP8266WebServer server(80);
 
 
 void setup() {
+  // Initialising the LEDS in the strip
   FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS);
+  // Setting all the LEDs to off
   for (int i=1; i<NUM_LEDS; i++) {
     leds[i-1] = CRGB(0,0,0);
     FastLED.show();
@@ -155,6 +161,7 @@ void(* resetFunc) (void) = 0;
 
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 void loop(void){
+  // If christmas mode is on then do the christmas animation
   while (christmas) {
     for (int i=1; i<=NUM_LEDS; i=i+2) {
       leds[i-1] = CRGB(255, 0, 0);
@@ -212,11 +219,13 @@ void handleNotFound(){
 /* SETUP REQUEST FUNCTIONS------------------------------------------------------------------------------------------------------------*/
 
 /* WIFI REQUEST SUPPORT FUNCTIONS--------------------------------------------------------------------------------------------------*/
-
+// Function to update the LEDs to new values
 void updateLeds(int rNew, int gNew, int bNew) {
+  // Loops through all the LEDs and sets the new values
   for (int i=1; i<=NUM_LEDS; i++) {
     leds[i-1] = CRGB(rNew, gNew, bNew);
   }
+  // Shows the updated values on the strip
   FastLED.show();
 }
 
@@ -232,41 +241,57 @@ void sendIp() {
   WiFi.softAPdisconnect(true);
 }
 
+// Function that returns the status of the strip
 void getColour() {
+  // Checks if the LEDs are on
   if (leds[0]) {
-    server.send(200, "text/plain", "{\"status\":true, \"r\":"+String(R)+", \"g\":"+String(G)+", \"b\":"+String(B)+"}");
+    server.send(200, "text/plain", "{\"status\":true, \"r\":"+String(R)+", \"g\":"+String(G)+", \"b\":"+String(B)+", \"christmas\":"+String(christmas)+"}");
   } else {
-    server.send(200, "text/plain", "{\"status\":false, \"r\":"+String(R)+", \"g\":"+String(G)+", \"b\":"+String(B)+"}");
+    server.send(200, "text/plain", "{\"status\":false, \"r\":"+String(R)+", \"g\":"+String(G)+", \"b\":"+String(B)+", \"christmas\":"+String(christmas)+"}");
   }
 }
 
+// Function to handle a request to update the colours
 void updateColour() {
+  // Checks if the request was to turn on christmas mode
   if (server.arg(3) == "true") {
     christmas = true;
   }
   else if (server.arg(3) == "false") {
     christmas = false;
+    updateLeds(0,0,0);
   }
-  else {
+  else if (!christmas) {
+   // Set the new values of R, G, B
    R = server.arg(0).toInt();
    G = server.arg(1).toInt();
    B = server.arg(2).toInt();
+   // Call the update LEDs function
    updateLeds(R, G, B);
   }
   server.send(204);
 }
 
+// Function to handle requests from a switch
 void switchControl() {
+  // Checks if the switch was turned off
   if (server.arg(0) == "false") {
+    christmas = false;
+    // Turn the LEDs off
     updateLeds(0,0,0);
   }
   else {
+    // Checks to see any RGB values have been set
     if ((R == 0) and (G == 0) and (B == 0)) {
+      // If not then set the RGB to white
       R = 255;
       G = 255;
       B = 255;
     }
-    updateLeds(R, G, B);
+    // If christmas mode is off and the switch was turned on, set the LEDs to the last RGB values
+    if (!christmas) {
+     updateLeds(R, G, B); 
+    }
   }
   server.send(204);
 }
