@@ -2,20 +2,16 @@
 #include <ESP8266WiFi.h>
 // Webserver library
 #include <ESP8266WebServer.h>
-// Flash memory library
-#include <EEPROM.h>
-
-// Initialise the address counter
-int writeAddress = 0;
-// Initialise the array to store the network details
-String readValues[2];
+// File access library
+#include <FS.h>
+// HTTP Client library
+#include <ESP8266HTTPClient.h>
 
 //Initialise variable to store the current status
 bool plugStatus = false;
 
 // Creating a webserver on port 80
 ESP8266WebServer server(80);
-
 
 void setup() {
   // Setup LED Indicators
@@ -29,16 +25,20 @@ void setup() {
   
   // Starting the serial connection
   Serial.begin(115200);
-  // Allocate 512 bytes in flash storage
-  EEPROM.begin(512);
+  // Mount the file system
+  SPIFFS.begin();
   delay(10);
   Serial.println('\n');
 
   // Read in the network name and password from memory if it exisits
-  readFromMem();
+  File networkFile = SPIFFS.open("/network.txt", "r");
+  String networkName = networkFile.readStringUntil('\n');
+  String networkPassword = networkFile.readStringUntil('\n');
+  networkName.trim();
+  networkPassword.trim();
   delay(1000);
-  String networkName = readValues[0];
-  String networkPassword = readValues[1];
+
+  networkFile.close();
 
   // Determining whether to run in setup mode or connect to an existing network
 /* WIFI MODE--------------------------------------------------------------------------------------------------------------------------*/
@@ -46,7 +46,7 @@ void setup() {
     // Attempt to connect to the home network
     Serial.print("Connecting to: ");
     Serial.print(networkName);
-    Serial.print(" With password: ");
+    Serial.print("\nWith password: ");
     Serial.print(networkPassword);
     Serial.print("\n");
     WiFi.begin(networkName, networkPassword);
@@ -150,18 +150,18 @@ void networkForm(){
 
 // Saves the network details that were submitted by the user
 void postSetup(){
-  String ssid, password;
+  // Opens the network file in write mode
+  File networkFile = SPIFFS.open("/network.txt", "w");
 
-  //Gets the network details from the response
-  ssid = server.arg(0);
-  password = server.arg(1);
+  // Saves the SSID and password
+  networkFile.println(server.arg(0));
+  networkFile.println(server.arg(1));
 
-  // Clears the exisiting memory
-  cleanMem();
+  Serial.println("Saved the SSID: "+server.arg(0));
+  Serial.println("Saved the Password: "+server.arg(1));
 
-  // Writes the network details to memory
-  saveToMem(ssid);
-  saveToMem(password);
+  // Close the file
+  networkFile.close();
 
   // Retruns a 201 once the details have been saved
   server.send(201, "text/plain", "201: Saved WiFi details, please connect to your main network");
@@ -215,71 +215,11 @@ void getStatus() {
 
 // Function to reset the settings
 void resetSettings(){
-  cleanMem();
+  // Format the files saved
+  SPIFFS.format();
+  Serial.println("Reset the device");
   server.send(200);
   delay(100);
   resetFunc();
 }
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
-
-/* MEMORY FUNCTIONS-------------------------------------------------------------------------------------------------------------------*/
-void cleanMem() {
-  for (int i = 0; i < 512; i++) {
-    if (EEPROM.read(i) != 255)
-    {
-      EEPROM.write(i, 255);
-      EEPROM.commit();
-    }
-  }
-  Serial.println("Cleaned Memory");
-}
-
-
-void saveToMem(String valueToSave) {
-  int valueLength = valueToSave.length()+1; 
-  char charArray[valueLength];
-  
-  valueToSave.toCharArray(charArray, valueLength);
-  
-  EEPROM.write(writeAddress, sizeof(charArray)-1);
-  EEPROM.commit();
-  writeAddress++;
-  for (int i = 0; i < sizeof(charArray)-1; i++)
-  {
-    EEPROM.write(writeAddress, charArray[i]);
-    EEPROM.commit();
-    writeAddress++;
-  }
-  Serial.print("\nAdded ");
-  Serial.print(valueToSave);
-  Serial.print(" To Memory");
-  Serial.print("\n");
-}
-
-
-void readFromMem() {
-  int readAddress = 0;
-  int lengthOfValue;
-
-  byte rawChar;
-  char convertedChar;
-  String value;
-  
-  for (int i = 0; i < 2; i++)
-  {
-    value = "";
-    lengthOfValue = EEPROM.read(readAddress);
-    if (lengthOfValue != 255) {
-     readAddress++;
-      for (int a = 0; a < lengthOfValue; a++)
-      {
-        rawChar = EEPROM.read(readAddress);
-        convertedChar = rawChar;
-        value += convertedChar;
-       readAddress++;
-      }
-      readValues[i] = value; 
-    }
-  }
-}
-/* MEMORY FUNCTIONS-------------------------------------------------------------------------------------------------------------------*/

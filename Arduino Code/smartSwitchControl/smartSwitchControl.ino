@@ -2,24 +2,16 @@
 #include <ESP8266WiFi.h>
 // Webserver library
 #include <ESP8266WebServer.h>
-// Flash memory library
-#include <EEPROM.h>
+// File access library
+#include <FS.h>
 // HTTP Client library
 #include <ESP8266HTTPClient.h>
-
-// Initialise the address counter
-int writeAddress = 0;
-// Initialise the array to store the values stored in memory
-String readValues[3];
-// Initialise string to store the IP address of the device
-String device;
 
 // Initialise the switch value variable
 int inputValue;
 
 // Creating a webserver on port 80
 ESP8266WebServer server(80);
-
 
 void setup() {
   
@@ -34,17 +26,20 @@ void setup() {
   
   // Starting the serial connection
   Serial.begin(115200);
-  // Allocate 512 bytes in flash storage
-  EEPROM.begin(512);
+  // Mount the file system
+  SPIFFS.begin();
   delay(10);
   Serial.println('\n');
 
   // Read in the network name, password and connected device from memory if it exisits
-  readFromMem();
+  File networkFile = SPIFFS.open("/network.txt", "r");
+  String networkName = networkFile.readStringUntil('\n');
+  String networkPassword = networkFile.readStringUntil('\n');
+  networkName.trim();
+  networkPassword.trim();
   delay(1000);
-  String networkName = readValues[0];
-  String networkPassword = readValues[1];
-  device = readValues[2];
+
+  networkFile.close();
 
   // Determining whether to run in setup mode or connect to an existing network
 /* WIFI MODE--------------------------------------------------------------------------------------------------------------------------*/
@@ -52,7 +47,7 @@ void setup() {
     // Attempt to connect to the home network
     Serial.print("Connecting to: ");
     Serial.print(networkName);
-    Serial.print(" With password: ");
+    Serial.print("\nWith password: ");
     Serial.print(networkPassword);
     Serial.print("\n");
     WiFi.begin(networkName, networkPassword);
@@ -163,18 +158,15 @@ void networkForm(){
 
 // Saves the network details that were submitted by the user
 void postSetup(){
-  String ssid, password;
+  // Opens the network file in write mode
+  File networkFile = SPIFFS.open("/network.txt", "w");
 
-  //Gets the network details from the response
-  ssid = server.arg(0);
-  password = server.arg(1);
+  // Saves the SSID and password
+  networkFile.println(server.arg(0));
+  networkFile.println(server.arg(1));
 
-  // Clears the exisiting memory
-  cleanMem();
-
-  // Writes the network details to memory
-  saveToMem(ssid, false);
-  saveToMem(password, false);
+  // Close the file
+  networkFile.close();
 
   // Retruns a 201 once the details have been saved
   server.send(201, "text/plain", "201: Saved WiFi details, please connect to your main network");
@@ -200,16 +192,19 @@ void sendIp() {
 
 // Function to update the device connected to the switch
 void updateDevices(){
-  // Gets the IP address of the device from the parameters
-  device = server.arg(0);
-  saveToMem(device, true);
-  Serial.println("Device Saved: " + device);
+  File deviceFile = SPIFFS.open("/devices.txt", "w");
+  deviceFile.println(server.arg(0));
+
+  deviceFile.close();
+  
+  Serial.println("Device Saved: " + server.arg(0));
   server.send(204);
 }
 
 // Function to update the connected device
 void resetSettings(){
-  cleanMem();
+  // Format the files saved
+  SPIFFS.format();
   server.send(200);
   delay(100);
   resetFunc();
@@ -217,7 +212,15 @@ void resetSettings(){
 
 // Function to return the IP address of the device that is connected to the switch
 void getDevices() {
-  server.send(200, "text/plain", "{\"deviceIp\":"+String(device)+"}");
+  File deviceFile = SPIFFS.open("/devices.txt", "r");
+  String device = deviceFile.readStringUntil('\n');
+  device.trim();
+  if (device.length() > 0) {
+   server.send(200, "text/plain", "{\"deviceIp\":"+device+"}"); 
+  } else {
+    server.send(200, "text/plain", "{\"deviceIp\": \"\"}"); 
+  }
+  deviceFile.close();
 }
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
 
@@ -232,6 +235,10 @@ void sendSwitch(int input) {
   else {
     value = "false";
   }
+  File deviceFile = SPIFFS.open("/devices.txt", "r");
+
+  String device = deviceFile.readStringUntil('\n');
+  device.trim();
   Serial.println("Sending Status: "+value + " to device: " + device);
 
   // Setup the HTTP request
@@ -244,78 +251,4 @@ void sendSwitch(int input) {
   int responseCode = http.PUT("Status="+value);
   http.end();
 }
-
 /* SWITCH FUNCTIONS----------------------------------------------------------------------------------------------------------------*/
-
-/* MEMORY FUNCTIONS-------------------------------------------------------------------------------------------------------------------*/
-void cleanMem() {
-  for (int i = 0; i < 512; i++) {
-    if (EEPROM.read(i) != 255)
-    {
-      EEPROM.write(i, 255);
-      EEPROM.commit();
-    }
-  }
-  Serial.println("Cleaned Memory");
-}
-
-
-void saveToMem(String valueToSave, bool saveDevice) {
-  
-  int valueLength = valueToSave.length()+1; 
-  char charArray[valueLength];
-  
-  valueToSave.toCharArray(charArray, valueLength);
-  
-  EEPROM.write(writeAddress, sizeof(charArray)-1);
-  EEPROM.commit();
-  writeAddress++;
-  for (int i = 0; i < sizeof(charArray)-1; i++)
-  {
-    EEPROM.write(writeAddress, charArray[i]);
-    EEPROM.commit();
-    writeAddress++;
-  }
-  if (saveDevice) {
-    writeAddress = writeAddress - sizeof(charArray);
-  }
-  Serial.print("\nAdded ");
-  Serial.print(valueToSave);
-  Serial.print(" To Memory");
-  Serial.print("\n");
-}
-
-
-void readFromMem() {
-  int readAddress = 0;
-  int lengthOfValue;
-
-  byte rawChar;
-  char convertedChar;
-  String value;
-  
-  for (int i = 0; i < 3; i++)
-  {
-    value = "";
-    lengthOfValue = EEPROM.read(readAddress);
-    if (lengthOfValue != 255) {
-     readAddress++;
-      for (int a = 0; a < lengthOfValue; a++)
-      {
-        rawChar = EEPROM.read(readAddress);
-        convertedChar = rawChar;
-        value += convertedChar;
-       readAddress++;
-      }
-      readValues[i] = value;
-      Serial.println("Read value: "+readValues[i]); 
-    }
-  }
-  if (lengthOfValue != 255) {
-    writeAddress = readAddress - (lengthOfValue+1);
-  }
-  else {
-    writeAddress = readAddress;
-  }
-}
-/* MEMORY FUNCTIONS-------------------------------------------------------------------------------------------------------------------*/
