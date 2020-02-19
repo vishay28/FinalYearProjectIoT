@@ -7,8 +7,12 @@
 // HTTP Client library
 #include <ESP8266HTTPClient.h>
 
-// Initialise the switch value variable
-int inputValue;
+// Initialise a variavble to store the current time
+long currentTime;
+// Initialise a variable to check if any connected device exists
+String device;
+// Initialise a variable to store the latching time
+int latchingTime;
 
 // Creating a webserver on port 80
 ESP8266WebServer server(80);
@@ -27,7 +31,9 @@ void setup() {
   // Starting the serial connection
   Serial.begin(115200);
   // Mount the file system
-  SPIFFS.begin();
+  if (!SPIFFS.begin()) {
+    while(true);
+  }
   delay(10);
   Serial.println('\n');
 
@@ -35,11 +41,17 @@ void setup() {
   File networkFile = SPIFFS.open("/network.txt", "r");
   String networkName = networkFile.readStringUntil('\n');
   String networkPassword = networkFile.readStringUntil('\n');
+  networkFile.close();
   networkName.trim();
   networkPassword.trim();
+  File settingsFile = SPIFFS.open("/settings.txt", "r");
+  latchingTime = settingsFile.readStringUntil('\n').toInt();
+  settingsFile.close();
+  if (latchingTime == 0) {
+    latchingTime = 300000;
+  }
+  Serial.println("Starting latching time: " + String(latchingTime));
   delay(1000);
-
-  networkFile.close();
 
   // Determining whether to run in setup mode or connect to an existing network
 /* WIFI MODE--------------------------------------------------------------------------------------------------------------------------*/
@@ -77,20 +89,25 @@ void setup() {
       Serial.print("\n");
 
       // Setup the input pin for reading the switch status
-      pinMode(14, INPUT_PULLUP);
-      inputValue = digitalRead(14);
+      pinMode(14, INPUT);
 
       // Sends the network IP address
       server.on("/getIp", HTTP_GET, sendIp);
+
+      // Gets the IP address of the device that the switch is connected to
+      server.on("/devices", HTTP_GET, getDevices);
     
       // Updates the device that the switch is connected to
       server.on("/devices", HTTP_PUT, addDevice);
 
-      // Gets the IP address of the device that the switch is connected to
-      server.on("/devices", HTTP_GET, getDevices);
-
       // Deletes a connected device
       server.on("/deleteDevice", HTTP_PUT, deleteDevice);
+
+      // Gets the latching time
+      server.on("/time", HTTP_GET, getTime);
+
+      // Updates the latching time
+      server.on("/time", HTTP_PUT, updateTime);
 
       // Resets all the settings
       server.on("/reset", HTTP_DELETE, resetSettings);
@@ -107,7 +124,7 @@ void setup() {
     digitalWrite(0, LOW);
     
     // Starting up the access point with the provided ssid and password
-    WiFi.softAP("smartSwitch", "");
+    WiFi.softAP("smartMotionSensor", "");
   
     // Print out the access point details
     Serial.print("Access Point Started");
@@ -142,14 +159,36 @@ void(* resetFunc) (void) = 0;
 
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 void loop(void){
-  server.handleClient();
-  // Checks if the switch has been toggled
-  if (digitalRead(14) != inputValue) {
-    // Saves the new state of the switch
-    inputValue = digitalRead(14);
-    // Calls the function to toggle the connected device
-    sendSwitch(inputValue);
+
+  File deviceFile = SPIFFS.open("/devices.txt", "r");
+  device = deviceFile.readStringUntil('\n');
+  deviceFile.close();
+  device.trim();
+  if (device != "Null" && device != "") {
+    // Checks the current state
+    if (digitalRead(14)) {
+      // Switch the connected device
+      sendSwitch(digitalRead(14));
+      // Save the current time
+      currentTime = millis();
+      // Start a timer for 5 minutes
+      while ((millis()-currentTime) < latchingTime) {
+        // If motion is detected reset the timer
+        if (digitalRead(14)) {
+          currentTime = millis();
+        }
+        server.handleClient();
+      }
+    } else {
+      sendSwitch(digitalRead(14));
+      currentTime = millis();
+      // Start the timer but end it if motion is detected
+      while (((millis()-currentTime) < latchingTime) && !digitalRead(14)) {
+        server.handleClient();
+      }
+    } 
   }
+  server.handleClient();
 }
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 
@@ -187,15 +226,14 @@ void handleNotFound(){
 // Function to return the IP address of the arduino on the home network
 void sendIp() {
   // Sends the IP address along with the device type
-  server.send(200, "text/plain", "{"+WiFi.localIP().toString()+":\"smartSwitch\"}");
+  server.send(200, "text/plain", "{"+WiFi.localIP().toString()+":\"smartMotion\"}");
   delay(100);
   // Disconnects from the phone
   WiFi.softAPdisconnect(true);
 }
 
-// Function to return the IP addresses of the devices that is connected to the switch
+// Function to return the IP address of the device that is connected to the switch
 void getDevices() {
-
   File deviceFile = SPIFFS.open("/devices.txt", "r");
   server.streamFile(deviceFile, "text/plain");
   deviceFile.close();
@@ -239,6 +277,26 @@ void deleteDevice() {
   server.send(204);
 }
 
+// Function to update the latching time
+void updateTime(){
+  File settingsFile = SPIFFS.open("/settings.txt", "w");
+  settingsFile.println(server.arg(0).toInt() * 1000);
+  settingsFile.close();
+  latchingTime = server.arg(0).toInt() * 1000;
+  Serial.println("Latching time updated: " + String(latchingTime));
+  server.send(204);
+}
+
+// Function to return the latching time
+void getTime() {
+  if (latchingTime > 0) {
+    Serial.println("Sending latching time: " + String(latchingTime/1000));
+   server.send(200, "text/plain", "{\"time\":"+String(latchingTime/1000)+"}");
+  } else {
+    server.send(200, "text/plain", "{\"time\": \"0\"}");
+  }
+}
+
 // Function to reset the device
 void resetSettings(){
   // Format the files saved
@@ -255,10 +313,10 @@ void sendSwitch(int input) {
   String value;
   // Converts the integer value to a boolean value
   if (input == 0){
-    value = "true";
+    value = "false";
   }
   else {
-    value = "false";
+    value = "true";
   }
   File deviceFile = SPIFFS.open("/devices.txt", "r");
   String device;
@@ -266,7 +324,6 @@ void sendSwitch(int input) {
     device = deviceFile.readStringUntil('\n');
     device.trim();
     Serial.println("Sending Status: "+value + " to device: " + device);
-  
     // Setup the HTTP request
     HTTPClient http;
     // Sets the URL
