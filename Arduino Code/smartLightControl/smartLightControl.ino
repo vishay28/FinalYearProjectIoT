@@ -121,6 +121,17 @@ void setup() {
       // Calling the function to load the saved schedules
       loadSchedules();
 
+      // Load the last saved RGB values
+      File settingsFile = SPIFFS.open("/settings.txt", "r");
+      R = settingsFile.readStringUntil('\n').toInt();
+      G = settingsFile.readStringUntil('\n').toInt();
+      B = settingsFile.readStringUntil('\n').toInt();
+      Serial.println(R);
+      Serial.println(G);
+      Serial.println(B);
+
+      settingsFile.close();
+
       // Sends the network IP address
       server.on("/getIp", HTTP_GET, sendIp);
     
@@ -287,6 +298,12 @@ void updateColour() {
    R = server.arg(0).toInt();
    G = server.arg(1).toInt();
    B = server.arg(2).toInt();
+   // Save the updated values into memory
+   File settingsFile = SPIFFS.open("/settings.txt", "w");
+   settingsFile.println(String(R));
+   settingsFile.println(String(G));
+   settingsFile.println(String(B));
+   settingsFile.close();
    // Call the update LEDs function
    updateLeds(R, G, B);
   }
