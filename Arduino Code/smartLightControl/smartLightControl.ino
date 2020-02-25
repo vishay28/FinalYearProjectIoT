@@ -6,6 +6,15 @@
 #include <FS.h>
 // LED strip library
 #include <FastLED.h>
+// NTP client for getting the time
+#include <NTPClient.h>
+// UDP library for connecting to the NTP Client
+#include <WiFiUdp.h>
+// Cron library for running the schedules
+#include "CronAlarms.h"
+// Time and sys time libraries for setting the system time
+#include <time.h>
+#include <sys/time.h>
 
 // Defining the data pin for the LEDs
 #define LED_PIN 14
@@ -13,6 +22,10 @@
 #define NUM_LEDS 15
 // Creating an LED arrray
 CRGB leds[NUM_LEDS];
+
+// Initialising the UDP server and setting the NTP client
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0);
 
 // Initialise the RGB values
 int R = 0;
@@ -93,9 +106,20 @@ void setup() {
       Serial.print(WiFi.localIP());
       Serial.print("\n");
 
-      // Sets up the output pins which set and unset the relay
-      pinMode(12, OUTPUT);
-      pinMode(13, OUTPUT);
+      //Starting the time client and getting the current time
+      timeClient.begin();
+      timeClient.update();
+
+      // Getting the current time in epoch
+      timeval epoch = {timeClient.getEpochTime(), 0};
+      timezone tz = {0, 0};
+      // Setting the system time to the current time
+      settimeofday(&epoch, &tz);
+      // Closing the connection
+      timeClient.end();
+
+      // Calling the function to load the saved schedules
+      loadSchedules();
 
       // Sends the network IP address
       server.on("/getIp", HTTP_GET, sendIp);
@@ -108,6 +132,15 @@ void setup() {
 
       // Switch the LEDs on or off from a switch
       server.on("/switch", HTTP_PUT, switchControl);
+
+      // Add a new schedule
+      server.on("/schedule", HTTP_POST, addSchedule);
+
+      // Get a schedule
+      server.on("/schedule", HTTP_GET, getSchedule);
+
+      // Delete a schedule
+      server.on("/deleteSchedule", HTTP_PUT, deleteSchedule);
 
       // Resets all the settings
       server.on("/reset", HTTP_DELETE, resetSettings);
@@ -179,6 +212,9 @@ void loop(void){
     server.handleClient();
     delay(500);
   }
+  // Check for any cron tasks
+  Cron.delay();
+  //Listening for incomming requests
   server.handleClient();
 }
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
@@ -215,19 +251,6 @@ void handleNotFound(){
   server.send(404, "text/plain", "404: Not found");
 }
 /* SETUP REQUEST FUNCTIONS------------------------------------------------------------------------------------------------------------*/
-
-/* WIFI REQUEST SUPPORT FUNCTIONS--------------------------------------------------------------------------------------------------*/
-// Function to update the LEDs to new values
-void updateLeds(int rNew, int gNew, int bNew) {
-  // Loops through all the LEDs and sets the new values
-  for (int i=1; i<=NUM_LEDS; i++) {
-    leds[i-1] = CRGB(rNew, gNew, bNew);
-  }
-  // Shows the updated values on the strip
-  FastLED.show();
-}
-
-/* WIFI REQUEST SUPPORT FUNCTIONS--------------------------------------------------------------------------------------------------*/
 
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
 // Function to return the IP address of the arduino on the home network
@@ -274,24 +297,91 @@ void updateColour() {
 void switchControl() {
   // Checks if the switch was turned off
   if (server.arg(0) == "false") {
-    christmas = false;
-    // Turn the LEDs off
-    updateLeds(0,0,0);
+    turnOff();
   }
   else {
-    // Checks to see any RGB values have been set
-    if ((R == 0) and (G == 0) and (B == 0)) {
-      // If not then set the RGB to white
-      R = 255;
-      G = 255;
-      B = 255;
-    }
-    // If christmas mode is off and the switch was turned on, set the LEDs to the last RGB values
-    if (!christmas) {
-     updateLeds(R, G, B); 
-    }
+    turnOn();
   }
   server.send(204);
+}
+
+// Function to add a schedule
+void addSchedule() {
+  // Initialise a variable to store the id of the cron job being added
+  CronId id;
+  // Set a variable with the specified timings
+  String timings = server.arg(1);
+  // Determine if the function is to turn on or off
+  if (server.arg(2) == "turnOn") {
+    // For specifying the timings in cron you have to give the address of the first character in a string literal
+    // Create the cron job and return the id
+    id = Cron.create(&timings[0], turnOn, false); 
+  } else {
+    id = Cron.create(&timings[0], turnOff, false);
+  }
+
+  // Append the new cron job to the cron file
+  File cronFile = SPIFFS.open("/cron.txt", "a");
+  // The format that this is saved is "name, sec min hr day mon day, function, id"
+  cronFile.print(server.arg(0) + "," + server.arg(1) + "," + server.arg(2) + ",");
+  // Making the id two digits before saving it
+  cronFile.println(id < 10 ? "0"+String(id) : String(id));
+  cronFile.close();
+  server.send(201);
+}
+
+// Function to delete a schedule
+void deleteSchedule() {
+  // Initialising a variable to store a row read from the cron file
+  String cronRow;
+
+  // Opening the cron file and creating a new file in which the jobs that aren't being deleted will be copied to
+  File cronFile = SPIFFS.open("/cron.txt", "r");
+  File cronFileNew = SPIFFS.open("/cronNew.txt", "w");
+
+  // Read every row in the cron file
+  while (cronFile.available()) {
+    cronRow = cronFile.readStringUntil('\n');
+    cronRow.trim();
+
+    // If the row isn't the job that needs to be deleted then copy it to a new file
+    if (!cronRow.startsWith(server.arg(0), 0)) {
+      Serial.println("Copying: " + cronRow);
+      cronFileNew.println(cronRow);
+    }
+  }
+  // Delete the actual cron job and free up memory
+  Cron.free((cronRow.substring(cronRow.length() - 2)).toInt());
+
+  cronFile.close();
+  cronFileNew.close();
+
+  // Delete the old file and replace it with the new file
+  SPIFFS.remove("/cron.txt");
+  SPIFFS.rename("/cronNew.txt", "/cron.txt");
+
+  server.send(204);
+}
+
+// Function to get the details of a specific cron job
+void getSchedule() {
+  // Open the cron file
+  File cronFile = SPIFFS.open("/cron.txt", "r");
+
+  // Initialise a varaible to store the read row
+  String cronRow;
+  // Read the cron file until the cron job is found
+  while (cronFile.available()) {
+    cronRow = cronFile.readStringUntil('\n');
+    cronRow.trim();
+    // If the cron job is found then break from the while loop
+    if (cronRow.startsWith(server.arg(0),0)) {
+      break;
+    }
+  }
+  cronFile.close();
+  // Send the job details back to the app
+  server.send(200, "text/plain", "{\"row\":\""+cronRow+"\"}");
 }
 
 // Function to reset the settings
@@ -304,3 +394,79 @@ void resetSettings(){
   resetFunc();
 }
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
+
+/* LIGHT FUNCTION------------------------------------------------------------------------------------------------------------------*/
+// Function to update the LEDs to new values
+void updateLeds(int rNew, int gNew, int bNew) {
+  // Loops through all the LEDs and sets the new values
+  for (int i=1; i<=NUM_LEDS; i++) {
+    leds[i-1] = CRGB(rNew, gNew, bNew);
+  }
+  // Shows the updated values on the strip
+  FastLED.show();
+}
+
+// Function to turn on the light
+void turnOn() {
+  // Checks to see any RGB values have been set
+  if ((R == 0) and (G == 0) and (B == 0)) {
+    // If not then set the RGB to white
+    R = 255;
+    G = 255;
+    B = 255;
+  }
+  // If christmas mode is off and the switch was turned on, set the LEDs to the last RGB values
+  if (!christmas) {
+   updateLeds(R, G, B); 
+  }
+}
+
+// Function to turn off the light
+void turnOff() {
+  christmas = false;
+  // Turn the LEDs off
+  updateLeds(0,0,0);
+}
+
+/* LIGHT FUNCTION------------------------------------------------------------------------------------------------------------------*/
+
+// Function to load the saved cron jobs saved in memory upon startup
+void loadSchedules() {
+  // Open the cron file and create a new cron file to store the jobs with the updated IDs
+  File cronFile = SPIFFS.open("/cron.txt", "r");
+  File cronFileNew = SPIFFS.open("/cronNew.txt", "w");
+
+  // Initialise variables to store the row read from the file and the timings and id
+  String cronRow;
+  String timings;
+  CronId id;
+
+  // For each row in the original cron file, create a new cron job and save the details as well as the new id in the new file
+  while (cronFile.available()) {
+    cronRow = cronFile.readStringUntil('\n');
+    // Extract the timings for the given cron job
+    timings = cronRow.substring(cronRow.indexOf(",")+1, cronRow.indexOf(",",cronRow.indexOf(",")+1));
+    // Check the function of the given cron job and create the relevant cron job
+    if (cronRow.substring(cronRow.indexOf(",",cronRow.indexOf(",")+1)+1, cronRow.indexOf(",", cronRow.indexOf(",",cronRow.indexOf(",")+1)+1)) == "turnOn") {
+      id = Cron.create(&timings[0], turnOn, false); 
+    } else {
+      id = Cron.create(&timings[0], turnOff, false);
+    }
+    // Remove the old ID of the cron job
+    cronRow.remove(cronRow.lastIndexOf(",")+1,2);
+    // Append the new id
+    if (id < 10) {
+      cronRow += ("0"+String(id));
+    } else {
+      cronRow += String("id");
+    }
+    // Save the details of the cron job in the new file
+    cronFileNew.println(cronRow);
+  }
+  cronFile.close();
+  cronFileNew.close();
+
+  // Replace the old file with the new file
+  SPIFFS.remove("/cron.txt");
+  SPIFFS.rename("/cronNew.txt", "/cron.txt");
+}

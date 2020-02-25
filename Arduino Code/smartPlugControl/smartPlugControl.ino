@@ -6,9 +6,22 @@
 #include <FS.h>
 // HTTP Client library
 #include <ESP8266HTTPClient.h>
+// NTP client for getting the time
+#include <NTPClient.h>
+// UDP library for connecting to the NTP Client
+#include <WiFiUdp.h>
+// Cron library for running the schedules
+#include "CronAlarms.h"
+// Time and sys time libraries for setting the system time
+#include <time.h>
+#include <sys/time.h>
 
 //Initialise variable to store the current status
 bool plugStatus = false;
+
+// Initialising the UDP server and setting the NTP client
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0);
 
 // Creating a webserver on port 80
 ESP8266WebServer server(80);
@@ -75,6 +88,21 @@ void setup() {
       Serial.print(WiFi.localIP());
       Serial.print("\n");
 
+      //Starting the time client and getting the current time
+      timeClient.begin();
+      timeClient.update();
+
+      // Getting the current time in epoch
+      timeval epoch = {timeClient.getEpochTime(), 0};
+      timezone tz = {0, 0};
+      // Setting the system time to the current time
+      settimeofday(&epoch, &tz);
+      // Closing the connection
+      timeClient.end();
+
+      // Calling the function to load the saved schedules
+      loadSchedules();
+
       // Sets up the output pins which set and unset the relay
       pinMode(12, OUTPUT);
       pinMode(13, OUTPUT);
@@ -87,6 +115,15 @@ void setup() {
 
       // Gets the status of the plug
       server.on("/switch", HTTP_GET, getStatus);
+
+      // Add a new schedule
+      server.on("/schedule", HTTP_POST, addSchedule);
+
+      // Get a schedule
+      server.on("/schedule", HTTP_GET, getSchedule);
+
+      // Delete a schedule
+      server.on("/deleteSchedule", HTTP_PUT, deleteSchedule);
 
       // Resets all the settings
       server.on("/reset", HTTP_DELETE, resetSettings);
@@ -138,6 +175,8 @@ void(* resetFunc) (void) = 0;
 
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 void loop(void){
+  // Check for any cron tasks
+  Cron.delay();
   server.handleClient();
 }
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
@@ -194,23 +233,112 @@ void switchStatus(){
   Serial.print("\n");
   if (statusVal == "true")
   {
-    plugStatus = true;
-    digitalWrite(12, HIGH);
-    delay(10);
-    digitalWrite(12, LOW);
+    turnOn();
   }
   else {
-    plugStatus = false;
-    digitalWrite(13, HIGH);
-    delay(10);
-    digitalWrite(13, LOW);
+    turnOff();
   }
   server.send(204);
+}
+
+// Funtion to turn on the plug
+void turnOn() {
+  plugStatus = true;
+  digitalWrite(12, HIGH);
+  delay(10);
+  digitalWrite(12, LOW);
+}
+
+// Function to turn off the plug
+void turnOff() {
+  plugStatus = false;
+  digitalWrite(13, HIGH);
+  delay(10);
+  digitalWrite(13, LOW);
 }
 
 // Function to return the current status of the plug
 void getStatus() {
   server.send(200, "plain/text", "{\"status\":"+String(plugStatus)+"}");
+}
+
+// Function to add a schedule
+void addSchedule() {
+  // Initialise a variable to store the id of the cron job being added
+  CronId id;
+  // Set a variable with the specified timings
+  String timings = server.arg(1);
+  // Determine if the function is to turn on or off
+  if (server.arg(2) == "turnOn") {
+    // For specifying the timings in cron you have to give the address of the first character in a string literal
+    // Create the cron job and return the id
+    id = Cron.create(&timings[0], turnOn, false); 
+  } else {
+    id = Cron.create(&timings[0], turnOff, false);
+  }
+
+  // Append the new cron job to the cron file
+  File cronFile = SPIFFS.open("/cron.txt", "a");
+  // The format that this is saved is "name, sec min hr day mon day, function, id"
+  cronFile.print(server.arg(0) + "," + server.arg(1) + "," + server.arg(2) + ",");
+  // Making the id two digits before saving it
+  cronFile.println(id < 10 ? "0"+String(id) : String(id));
+  cronFile.close();
+  server.send(201);
+}
+
+// Function to delete a schedule
+void deleteSchedule() {
+  // Initialising a variable to store a row read from the cron file
+  String cronRow;
+
+  // Opening the cron file and creating a new file in which the jobs that aren't being deleted will be copied to
+  File cronFile = SPIFFS.open("/cron.txt", "r");
+  File cronFileNew = SPIFFS.open("/cronNew.txt", "w");
+
+  // Read every row in the cron file
+  while (cronFile.available()) {
+    cronRow = cronFile.readStringUntil('\n');
+    cronRow.trim();
+
+    // If the row isn't the job that needs to be deleted then copy it to a new file
+    if (!cronRow.startsWith(server.arg(0), 0)) {
+      Serial.println("Copying: " + cronRow);
+      cronFileNew.println(cronRow);
+    }
+  }
+  // Delete the actual cron job and free up memory
+  Cron.free((cronRow.substring(cronRow.length() - 2)).toInt());
+
+  cronFile.close();
+  cronFileNew.close();
+
+  // Delete the old file and replace it with the new file
+  SPIFFS.remove("/cron.txt");
+  SPIFFS.rename("/cronNew.txt", "/cron.txt");
+
+  server.send(204);
+}
+
+// Function to get the details of a specific cron job
+void getSchedule() {
+  // Open the cron file
+  File cronFile = SPIFFS.open("/cron.txt", "r");
+
+  // Initialise a varaible to store the read row
+  String cronRow;
+  // Read the cron file until the cron job is found
+  while (cronFile.available()) {
+    cronRow = cronFile.readStringUntil('\n');
+    cronRow.trim();
+    // If the cron job is found then break from the while loop
+    if (cronRow.startsWith(server.arg(0),0)) {
+      break;
+    }
+  }
+  cronFile.close();
+  // Send the job details back to the app
+  server.send(200, "text/plain", "{\"row\":\""+cronRow+"\"}");
 }
 
 // Function to reset the settings
@@ -223,3 +351,44 @@ void resetSettings(){
   resetFunc();
 }
 /* WIFI REQUEST FUNCTIONS----------------------------------------------------------------------------------------------------------*/
+
+// Function to load the saved cron jobs saved in memory upon startup
+void loadSchedules() {
+  // Open the cron file and create a new cron file to store the jobs with the updated IDs
+  File cronFile = SPIFFS.open("/cron.txt", "r");
+  File cronFileNew = SPIFFS.open("/cronNew.txt", "w");
+
+  // Initialise variables to store the row read from the file and the timings and id
+  String cronRow;
+  String timings;
+  CronId id;
+
+  // For each row in the original cron file, create a new cron job and save the details as well as the new id in the new file
+  while (cronFile.available()) {
+    cronRow = cronFile.readStringUntil('\n');
+    // Extract the timings for the given cron job
+    timings = cronRow.substring(cronRow.indexOf(",")+1, cronRow.indexOf(",",cronRow.indexOf(",")+1));
+    // Check the function of the given cron job and create the relevant cron job
+    if (cronRow.substring(cronRow.indexOf(",",cronRow.indexOf(",")+1)+1, cronRow.indexOf(",", cronRow.indexOf(",",cronRow.indexOf(",")+1)+1)) == "turnOn") {
+      id = Cron.create(&timings[0], turnOn, false); 
+    } else {
+      id = Cron.create(&timings[0], turnOff, false);
+    }
+    // Remove the old ID of the cron job
+    cronRow.remove(cronRow.lastIndexOf(",")+1,2);
+    // Append the new id
+    if (id < 10) {
+      cronRow += ("0"+String(id));
+    } else {
+      cronRow += String("id");
+    }
+    // Save the details of the cron job in the new file
+    cronFileNew.println(cronRow);
+  }
+  cronFile.close();
+  cronFileNew.close();
+
+  // Replace the old file with the new file
+  SPIFFS.remove("/cron.txt");
+  SPIFFS.rename("/cronNew.txt", "/cron.txt");
+}
