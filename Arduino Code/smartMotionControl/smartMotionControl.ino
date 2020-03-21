@@ -623,9 +623,10 @@ int sendEmail() {
   client.println("To: <" + email + ">");
 
   // change to your address
+  String date = timeClient.getFormattedDate();
   client.println("From: " + email);
   client.println("Subject: Motion Alert\r\n");
-  client.println("Motion was detected");
+  client.println("Motion was detected at: " + date.substring(0, date.indexOf("T")) + " " + timeClient.getFormattedTime());
   client.println(".");
 
   if (!response())
