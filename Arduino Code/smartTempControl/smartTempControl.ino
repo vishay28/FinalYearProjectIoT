@@ -6,26 +6,39 @@
 #include <FS.h>
 // HTTP Client library
 #include <ESP8266HTTPClient.h>
-// NTP client for getting the time
+// Base64 encryption and decryption library
+#include "base64.h"
+#include <OneWire.h>
+#include <DallasTemperature.h>
 #include <NTPClient.h>
 // UDP library for connecting to the NTP Client
 #include <WiFiUdp.h>
 // Time and sys time libraries for setting the system time
 #include <time.h>
 #include <sys/time.h>
-// Base64 encryption and decryption library
-#include "base64.h"
+// Cron library for running the schedules
+#include "CronAlarms.h"
 #include <AES.h>
 AES aes ;
 
-// Initialise the switch value variable
-int inputValue;
+// Data wire is conntec to the Arduino digital pin 4
+#define ONE_WIRE_BUS 14
 
-String userList[11];
+// Setup a oneWire instance to communicate with any OneWire devices
+OneWire oneWire(ONE_WIRE_BUS);
+
+// Pass our oneWire reference to Dallas Temperature sensor
+DallasTemperature sensors(&oneWire);
 
 // Initialising the UDP server and setting the NTP client
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", 0);
+
+float currentTemp;
+
+bool previousState = 0;
+
+String userList[11];
 
 // Creating a webserver on port 80
 ESP8266WebServer server(80);
@@ -34,7 +47,7 @@ byte key[] = { 0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15,
 unsigned long long int myIv = 00000000;
 
 void setup() {
-  
+
   // Setup LED Indicators
   // Pin 0 is the Red LED and pin 2 is the Blue LED
   pinMode(0, OUTPUT);
@@ -43,31 +56,32 @@ void setup() {
   // Set both LEDs to off (HIGH means off)
   digitalWrite(0, HIGH);
   digitalWrite(2, HIGH);
-  
+
   // Starting the serial connection
   Serial.begin(115200);
   // Mount the file system
-  SPIFFS.begin();
+  if (!SPIFFS.begin()) {
+    while(true);
+  }
   SPIFFS.remove("/log.txt");
   delay(10);
   Serial.println('\n');
 
-  saveLog("Smart Switch Booting Up!");
-  
+  saveLog("Temperature Sensor Booting Up!");
+
   // Read in the network name, password and connected device from memory if it exisits
   File networkFile = SPIFFS.open("/network.txt", "r");
   String networkName = networkFile.readStringUntil('\n');
   String networkPassword = networkFile.readStringUntil('\n');
+  networkFile.close();
   networkName.trim();
   networkPassword.trim();
   delay(1000);
 
-  networkFile.close();
-
   // Determining whether to run in setup mode or connect to an existing network
 /* WIFI MODE--------------------------------------------------------------------------------------------------------------------------*/
   if (networkName != "") {
-    
+    // Attempt to connect to the home network
     saveLog("Connecting to " + networkName + " with password: " + networkPassword);
 
     networkPassword = decrypt(networkPassword);
@@ -95,6 +109,9 @@ void setup() {
       saveLog("Connection established!");
       saveLog("IP address: " + (WiFi.localIP()).toString());
 
+      Cron.create("*/1 * * * * *", updateTemp, false);
+      sensors.begin();
+
       File usersFile = SPIFFS.open("/users.txt", "r");
       String tempUser;
       userList[0] = "ZXNwODI2NjphZG1pbg==";
@@ -118,28 +135,27 @@ void setup() {
       settimeofday(&epoch, &tz);
       saveLog("Set the system time");
 
-      // Setup the input pin for reading the switch status
-      pinMode(14, INPUT_PULLUP);
-      inputValue = digitalRead(14);
-
       // Sends the network IP address
       server.on("/getIp", HTTP_GET, sendIp);
-    
-      // Updates the device that the switch is connected to
-      server.on("/devices", HTTP_PUT, addDevice);
 
-      // Gets the IP address of the device that the switch is connected to
-      server.on("/devices", HTTP_GET, getDevices);
+      // Gets the IP address of the device that the sensor is connected to
+      server.on("/link", HTTP_GET, getLinks);
+
+      // Updates the device that the sensor is connected to
+      server.on("/link", HTTP_POST, addLink);
 
       // Deletes a connected device
-      server.on("/devices", HTTP_DELETE, deleteDevice);
+      server.on("/link", HTTP_DELETE, deleteLink);
+
+      // Gets the threshold temp
+      server.on("/temp", HTTP_GET, getTemp);
 
       // Returns the logs file
       server.on("/logs", HTTP_GET, getLogs);
 
       // Resets all the settings
       server.on("/reset", HTTP_DELETE, resetSettings);
-    
+
       // Starts the server
       server.begin();
       saveLog("Started the server");
@@ -151,23 +167,23 @@ void setup() {
   if (networkName == "") {
 
     digitalWrite(0, LOW);
-    
+
     // Starting up the access point with the provided ssid and password
-    WiFi.softAP("smartSwitch", "");
+    WiFi.softAP("smartTempSensor", "");
     saveLog("Starting access point IP: " + (WiFi.softAPIP()).toString());
-  
+
     // Returns the network input form when a request on the root is called
     server.on("/", HTTP_GET, networkForm);
-  
+
     // Saves the network details submitted by the form
     server.on("/setup", HTTP_POST, postSetup);
 
     // Returns the logs file
     server.on("/logs", HTTP_GET, getLogs);
-  
+
     // Serves a 404 not found for a URI that doesn't exist
     server.onNotFound(handleNotFound);
-  
+
     // Starts the server
     server.begin();
     saveLog("Started the server");
@@ -183,16 +199,38 @@ void(* resetFunc) (void) = 0;
 
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 void loop(void){
-  server.handleClient();
-  timeClient.update();
-  // Checks if the switch has been toggled
-  if (digitalRead(14) != inputValue) {
-    // Saves the new state of the switch
-    inputValue = digitalRead(14);
-    saveLog("Switch status updated to: " + String(!inputValue));
-    // Calls the function to toggle the connected device
-    sendSwitch(inputValue);
+  File linksFile = SPIFFS.open("/links.txt", "r");
+  String link;
+  float threshold;
+  int modeVal;
+  while (linksFile.available()) {
+    link = linksFile.readStringUntil('\n');
+    link.trim();
+    threshold = (link.substring(link.indexOf(",")+1, link.indexOf(",", link.indexOf(",")+1))).toFloat();
+    modeVal = (link.substring(link.indexOf(",", link.indexOf(",", link.indexOf(",")+1))+1, link.indexOf(",", link.indexOf(",", link.indexOf(",", link.indexOf(",")+1))+1))).toInt();
+    linksFile.close();
+    // mode 1 = greater than turn on, less than turn off | mode 2 = greater than turn off, less than turn on
+    if (modeVal) {
+      if (currentTemp > threshold && !previousState) {
+        sendSwitch(1, link.substring(link.lastIndexOf(",")+1));
+        previousState = 1;
+      } else if ((currentTemp < threshold) && (previousState)) {
+        sendSwitch(0, link.substring(link.lastIndexOf(",")+1));
+        previousState = 0;
+      }
+    } else if (!modeVal) {
+      if (currentTemp < threshold && !previousState) {
+        sendSwitch(1, link.substring(link.lastIndexOf(",")+1));
+        previousState = 1;
+      } else if ((currentTemp > threshold) && (previousState)) {
+        sendSwitch(0, link.substring(link.lastIndexOf(",")+1));
+        previousState = 0;
+      }
+    }
   }
+  timeClient.update();
+  Cron.delay();
+  server.handleClient();
 }
 /* MAIN LOOP--------------------------------------------------------------------------------------------------------------------------*/
 
@@ -244,7 +282,7 @@ void sendIp() {
   saveLog("HTTP " + String(server.uri()));
   if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
     // Sends the IP address along with the device type
-    server.send(200, "text/plain", "{"+WiFi.localIP().toString()+":\"smartSwitch\"}");
+    server.send(200, "text/plain", "{"+WiFi.localIP().toString()+":\"smartTemp\"}");
     delay(100);
     // Disconnects from the phone
     WiFi.softAPdisconnect(true);
@@ -255,28 +293,38 @@ void sendIp() {
   }
 }
 
-// Function to return the IP addresses of the devices that is connected to the switch
-void getDevices() {
+// Function to return the IP address of the device that is connected to the switch
+void getLinks() {
   saveLog("HTTP " + String(server.uri()));
   if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
-    File deviceFile = SPIFFS.open("/devices.txt", "r");
-    server.streamFile(deviceFile, "text/plain");
-    deviceFile.close();
+    File linksFile = SPIFFS.open("/links.txt", "r");
+    String link;
+    if (server.arg(0) != "") {
+      while (linksFile.available()) {
+        link = linksFile.readStringUntil('\n');
+        if (link.substring(0, link.indexOf(",")) == server.arg(0)) {
+          server.send(200, "text/plain", "{\"linkData\":\""+link+"\"}");
+        }
+      }
+    } else {
+      server.streamFile(linksFile, "text/plain");
+      linksFile.close();
+    }
   } else {
     server.send (403);
   }
 }
 
 // Function to update the device connected to the switch
-void addDevice(){
+void addLink(){
   saveLog("HTTP " + String(server.uri()));
   if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
-    File deviceFile = SPIFFS.open("/devices.txt", "a");
-    deviceFile.println(server.arg(0));
-  
-    deviceFile.close();
-    
-    saveLog("Adding device: " + server.arg(0));
+    File linksFile = SPIFFS.open("/links.txt", "a");
+    linksFile.println(server.arg(0)+","+server.arg(1)+","+server.arg(2)+","+server.arg(3));
+
+    linksFile.close();
+
+    saveLog("Added link: " + server.arg(0)+","+server.arg(1)+","+server.arg(2)+","+server.arg(3));
     server.send(204);
   } else {
     server.send (403);
@@ -284,31 +332,40 @@ void addDevice(){
 }
 
 //Function to delete a device connected to the switch
-void deleteDevice() {
+void deleteLink() {
   saveLog("HTTP " + String(server.uri()));
   if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
-    String device;
-    File deviceFile = SPIFFS.open("/devices.txt", "r");
-    File deviceFileNew = SPIFFS.open("/devicesNew.txt", "w");
-  
-    saveLog("Deleting device: " + server.arg(0));
-  
-    while (deviceFile.available()) {
-      device = deviceFile.readStringUntil('\n');
-      device.trim();
-      
-      if (device != server.arg(0)) {
-        deviceFileNew.println(device);
+    String link;
+    File linksFile = SPIFFS.open("/links.txt", "r");
+    File linksFileNew = SPIFFS.open("/linksNew.txt", "w");
+
+    saveLog("Deleting link: " + server.arg(0));
+
+    while (linksFile.available()) {
+      link = linksFile.readStringUntil('\n');
+      link.trim();
+
+      if (link.substring(0, link.indexOf(",")) != server.arg(0)) {
+        linksFileNew.println(link);
       }
     }
-    
-    deviceFile.close();
-    deviceFileNew.close();
-  
-    SPIFFS.remove("/devices.txt");
-    SPIFFS.rename("/devicesNew.txt", "/devices.txt");
-  
+
+    linksFile.close();
+    linksFileNew.close();
+
+    SPIFFS.remove("/links.txt");
+    SPIFFS.rename("/linksNew.txt", "/links.txt");
+
     server.send(204);
+  } else {
+    server.send (403);
+  }
+}
+
+void getTemp() {
+  saveLog("HTTP " + String(server.uri()));
+  if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
+    server.send(200, "text/plain", "{\"temp\":\""+String(currentTemp)+"\"}");
   } else {
     server.send (403);
   }
@@ -318,8 +375,8 @@ void deleteDevice() {
 void resetSettings(){
   saveLog("HTTP " + String(server.uri()));
   if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
-    saveLog("Resetting all settings");
     // Format the files saved
+    saveLog("Resetting all settings");
     SPIFFS.format();
     server.send(200);
     delay(100);
@@ -332,36 +389,37 @@ void resetSettings(){
 
 /* SWITCH FUNCTIONS----------------------------------------------------------------------------------------------------------------*/
 // Function to toggle the connected device
-void sendSwitch(int input) {
+void sendSwitch(int input, String device) {
   String value;
   // Converts the integer value to a boolean value
   if (input == 0){
-    value = "true";
-  }
-  else {
     value = "false";
   }
-  File deviceFile = SPIFFS.open("/devices.txt", "r");
-  String device;
-  while (deviceFile.available()) {
-    device = deviceFile.readStringUntil('\n');
-    device.trim();
-    saveLog("Sending Status: "+value + " to device: " + device);
-  
-    // Setup the HTTP request
-    HTTPClient http;
-    // Sets the URL
-    http.begin("http://" + device + "/switch");
-    // Sets the content type header
-    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-    http.addHeader("Authorization", "Basic " + userList[0]);
-    // Sends the PUT request
-    int responseCode = http.PUT("Status="+value);
-    http.end();
-    saveLog("Received response: " + String(responseCode));
+  else {
+    value = "true";
   }
+  saveLog("Sending Status: "+value + " to device: " + device);
+  // Setup the HTTP request
+  HTTPClient http;
+  // Sets the URL
+  http.begin("http://" + device + "/switch");
+  // Sets the content type header
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  http.addHeader("Authorization", "Basic " + userList[0]);
+  // Sends the PUT request
+  int responseCode = http.PUT("Status="+value);
+  http.end();
+  saveLog("Got response: "+String(responseCode));
 }
 /* SWITCH FUNCTIONS----------------------------------------------------------------------------------------------------------------*/
+
+/* SENSOR FUNCTION-----------------------------------------------------------------------------------------------------------------*/
+void updateTemp() {
+  server.handleClient();
+  sensors.requestTemperatures();
+  currentTemp = sensors.getTempCByIndex(0);
+}
+/* SENSOR FUNCTION-----------------------------------------------------------------------------------------------------------------*/
 
 /* AUTHENTICATION FUNCTION---------------------------------------------------------------------------------------------------------*/
 bool authenticate(String userClient) {
