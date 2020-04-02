@@ -109,6 +109,7 @@ void setup() {
       delay(500);
       digitalWrite(0, HIGH);
       delay(500);
+      i++;
     }
     // Determining if the WiFi connection was successfull
     if (WiFi.status() != WL_CONNECTED) {
@@ -174,7 +175,7 @@ void setup() {
       server.on("/devices", HTTP_GET, getDevices);
 
       // Adds a connected device
-      server.on("/devices", HTTP_PUT, addDevice);
+      server.on("/devices", HTTP_POST, addDevice);
 
       // Deletes a connected device
       server.on("/devices", HTTP_DELETE, deleteDevice);
@@ -185,14 +186,14 @@ void setup() {
       // Updates the latching time
       server.on("/time", HTTP_PUT, updateTime);
 
-      // Set the email username and password
+      // Set the email username, password and notification
       server.on("/email", HTTP_PUT, setEmail);
 
       // Get current notification status
       server.on("/email", HTTP_GET, getNotification);
 
-      // Set email notifications
-      server.on("/email", HTTP_POST, setNotification);
+      // Add a new user
+      server.on("/user", HTTP_POST, addUser);
 
       // Resets all the settings
       server.on("/reset", HTTP_DELETE, resetSettings);
@@ -457,22 +458,6 @@ void setEmail() {
   saveLog("HTTP " + String(server.uri()));
   if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
     File emailFile = SPIFFS.open("/email.txt", "w");
-    emailFile.println(encrypt(server.arg(0)));
-    emailFile.println(encrypt(server.arg(1)));
-    
-    emailFile.println(notification ? "on" : "off");
-    emailFile.close();
-    saveLog("Email credentials saved");
-    server.send(204);
-  } else {
-    server.send (403);
-  }
-}
-
-void setNotification() {
-  saveLog("HTTP " + String(server.uri()));
-  if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
-    File emailFile = SPIFFS.open("/email.txt", "w");
     
     emailFile.println(encrypt(server.arg(0)));
     emailFile.println(encrypt(server.arg(1)));
@@ -481,8 +466,28 @@ void setNotification() {
     emailFile.close();
 
     notification = server.arg(2) == "true" ? true : false;
-    saveLog("Notifications set to: "+server.arg(0));
+    saveLog("Notifications set to: "+server.arg(2));
     server.send(204);
+  } else {
+    server.send (403);
+  }
+}
+
+void addUser() {
+  saveLog("HTTP " + String(server.uri()));
+  if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
+    int i = 0;
+    while (i < sizeof(userList)) {
+      if (userList[i] == "") {
+        break;
+      }
+      i++;
+    }
+    userList[i] = server.arg(0);
+    File userFile = SPIFFS.open("/users.txt", "a");
+    userFile.println(server.arg(0));
+    userFile.close();
+    server.send(201);
   } else {
     server.send (403);
   }

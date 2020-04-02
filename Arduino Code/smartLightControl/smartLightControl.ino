@@ -115,6 +115,7 @@ void setup() {
       delay(500);
       digitalWrite(0, HIGH);
       delay(500);
+      i++;
     }
     // Determining if the WiFi connection was successfull
     if (WiFi.status() != WL_CONNECTED) {
@@ -184,7 +185,7 @@ void setup() {
       server.on("/colour", HTTP_GET, getColour);
 
       // Update the LED colour
-      server.on("/colour", HTTP_POST, updateColour);
+      server.on("/colour", HTTP_PUT, updateColour);
 
       // Switch the LEDs on or off
       server.on("/switch", HTTP_PUT, switchControl);
@@ -196,13 +197,16 @@ void setup() {
       server.on("/schedule", HTTP_GET, getSchedule);
 
       // Delete a schedule
-      server.on("/deleteSchedule", HTTP_PUT, deleteSchedule);
+      server.on("/schedule", HTTP_DELETE, deleteSchedule);
 
       // Sets the temp sensor to get data from
-      server.on("/devices", HTTP_PUT, setDevice);
+      server.on("/sensor", HTTP_POST, setDevice);
 
       // Deletes the set device
-      server.on("/devices", HTTP_DELETE, deleteDevice);
+      server.on("/sensor", HTTP_DELETE, deleteDevice);
+
+      // Add a new user
+      server.on("/user", HTTP_POST, addUser);
 
       // Returns the logs file
       server.on("/logs", HTTP_GET, getLogs);
@@ -229,8 +233,8 @@ void setup() {
     WiFi.softAP("smartLight", "");
     saveLog("Starting access point IP: " + (WiFi.softAPIP()).toString());
 
-    // Returns the network input form when a request on the root is called
-    server.on("/", HTTP_GET, networkForm);
+    // Returns a 200 when a request on the root is called
+    server.on("/", HTTP_GET, handleRoot);
 
     // Saves the network details submitted by the form
     server.on("/setup", HTTP_POST, postSetup);
@@ -292,9 +296,9 @@ void loop(void){
 
 /* SETUP REQUEST FUNCTIONS------------------------------------------------------------------------------------------------------------*/
 // Returns the form for the user to set up the device through a browser
-void networkForm(){
+void handleRoot(){
   saveLog("HTTP " + String(server.uri()));
-  server.send(200, "text/html", "<form action=\"/setup\" method=\"POST\" enctype=\"multipart/form-data\"> SSID: <input type=\"text\" name=\"ssid\"><br> Password: <input type=\"text\" name=\"password\"><br><input type=\"submit\" value=\"Submit\">");
+  server.send(200);
 }
 
 // Saves the network details that were submitted by the user
@@ -555,6 +559,26 @@ void deleteDevice() {
   }
 }
 
+void addUser() {
+  saveLog("HTTP " + String(server.uri()));
+  if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
+    int i = 0;
+    while (i < sizeof(userList)) {
+      if (userList[i] == "") {
+        break;
+      }
+      i++;
+    }
+    userList[i] = server.arg(0);
+    File userFile = SPIFFS.open("/users.txt", "a");
+    userFile.println(server.arg(0));
+    userFile.close();
+    server.send(201);
+  } else {
+    server.send (403);
+  }
+}
+
 // Function to reset the settings
 void resetSettings(){
   saveLog("HTTP " + String(server.uri()));
@@ -806,6 +830,7 @@ String b64decode(String input) {
   return output;
 }
 /* ENCRYPTION FUNCTIONS------------------------------------------------------------------------------------------------------------*/
+
 
 /* LOGS FUNCTION----------------------------------------------------------------------------------------------------------------*/
 void saveLog(String message) {

@@ -81,6 +81,7 @@ void setup() {
       delay(500);
       digitalWrite(0, HIGH);
       delay(500);
+      i++;
     }
     // Determining if the WiFi connection was successfull
     if (WiFi.status() != WL_CONNECTED) {
@@ -141,7 +142,10 @@ void setup() {
       server.on("/schedule", HTTP_GET, getSchedule);
 
       // Delete a schedule
-      server.on("/deleteSchedule", HTTP_PUT, deleteSchedule);
+      server.on("/schedule", HTTP_DELETE, deleteSchedule);
+
+      // Add a new user
+      server.on("/user", HTTP_POST, addUser);
 
       // Returns the logs file
       server.on("/logs", HTTP_GET, getLogs);
@@ -167,7 +171,7 @@ void setup() {
     saveLog("Starting access point IP: " + (WiFi.softAPIP()).toString());
   
     // Returns the network input form when a request on the root is called
-    server.on("/", HTTP_GET, networkForm);
+    server.on("/", HTTP_GET, handleRoot);
   
     // Saves the network details submitted by the form
     server.on("/setup", HTTP_POST, postSetup);
@@ -199,9 +203,9 @@ void loop(void){
 
 /* SETUP REQUEST FUNCTIONS------------------------------------------------------------------------------------------------------------*/
 // Returns the form for the user to set up the device through a browser
-void networkForm(){
+void handleRoot(){
   saveLog("HTTP " + String(server.uri()));
-  server.send(200, "text/html", "<form action=\"/setup\" method=\"POST\" enctype=\"multipart/form-data\"> SSID: <input type=\"text\" name=\"ssid\"><br> Password: <input type=\"text\" name=\"password\"><br><input type=\"submit\" value=\"Submit\">");
+  server.send(200);
 }
 
 // Saves the network details that were submitted by the user
@@ -245,7 +249,7 @@ void sendIp() {
   saveLog("HTTP " + String(server.uri()));
   if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
     // Sends the IP address along with the device type
-    server.send(200, "text/plain", "{"+WiFi.localIP().toString()+":\"plug\"}");
+    server.send(200, "text/plain", "{"+WiFi.localIP().toString()+":\"smartPlug\"}");
     delay(100);
     // Disconnects from the phone
     WiFi.softAPdisconnect(true);
@@ -391,6 +395,26 @@ void deleteSchedule() {
     SPIFFS.rename("/cronNew.txt", "/cron.txt");
 
     server.send(204);
+  } else {
+    server.send (403);
+  }
+}
+
+void addUser() {
+  saveLog("HTTP " + String(server.uri()));
+  if (server.hasHeader("Authorization") && authenticate(server.header("Authorization"))){
+    int i = 0;
+    while (i < sizeof(userList)) {
+      if (userList[i] == "") {
+        break;
+      }
+      i++;
+    }
+    userList[i] = server.arg(0);
+    File userFile = SPIFFS.open("/users.txt", "a");
+    userFile.println(server.arg(0));
+    userFile.close();
+    server.send(201);
   } else {
     server.send (403);
   }
